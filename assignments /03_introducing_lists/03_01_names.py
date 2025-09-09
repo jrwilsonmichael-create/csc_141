@@ -1,3 +1,3 @@
-# I will be adding my favorite pizzas to a list and printing each pizza individually
-pizzas = ["pepperoni", "cheese", "bbq chicken",   "meat lovers"]
-[print(pizza) for pizza in pizzas]
+# I will store the names of a few of my friends in a list and print each name individually
+names = ["Michael A, Malaki, Tahjay,Thaddeus"]
+[print(name) for name in names]
