@@ -1,0 +1,4 @@
+# I will add stars 
+stars = {
+    'Sirius': {'type': 'Main Sequence', 'distance_light_years': 8.6, 'constellation': 'Canis Major'},
+}
