@@ -1,0 +1,6 @@
+# I will be making a city and country function
+def city_country(city, country):
+    """Return a string formatted as 'City, Country'."""
+    return f"{city.title()}, {country.title()}"
+# Example usage:
+print(city_country("Philadelphia", "USA"))
