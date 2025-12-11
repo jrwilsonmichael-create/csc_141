@@ -1,0 +1,369 @@
+import sys
+import pygame
+from settings import Settings
+from ship import Ship
+from healthbar import HealthBar
+from Alien import Alien
+from bullet import Bullet
+
+
+class AlienInvasion:
+    """Overall class to manage game assets and behavior."""
+    def __init__(self):
+        """Initialize the game, and create game resources."""
+        pygame.init()
+
+        # Store game settings
+        self.settings = Settings()
+
+        # Create a screen object and set the window caption
+        self.screen = pygame.display.set_mode((self.settings.screen_width, self.settings.screen_height))
+        pygame.display.set_caption("Alien Infection")
+
+        # Clock for controlling the frame rate
+        self.clock = pygame.time.Clock()
+
+        # Create a ship
+        self.ship = Ship(self)
+
+        # Create a health bar
+        self.healthbar = HealthBar(self, max_health=100)
+
+        # Create a sprite group to hold all aliens
+        self.aliens = pygame.sprite.Group()
+        self._create_fleet()
+        
+        # Create a group to hold bullets fired by the ship
+        self.bullets = pygame.sprite.Group()
+        # Firing flag for space key state
+        self.space_pressed = False
+        # Burst fire control: allow a small burst then cooldown
+        self.bullets_in_burst = 0
+        self.burst_limit = 5
+        self.burst_cooldown = 1500  # milliseconds
+        self.burst_cooldown_start = 0
+        self.in_burst_cooldown = False
+
+        # Score tracking
+        self.score = 0
+        self.font = pygame.font.SysFont(None, 24)
+        # Round tracking
+        self.round = 1
+        self.round_start_time = 0
+        self.show_round_message = False
+        self.round_message_time = 1500  # milliseconds to show round message
+
+        # High score
+        self.high_score = 0
+        
+        # Base alien speed to scale per round
+        self.base_alien_speed = self.settings.alien_speed
+        
+        # Health drain timer (for round 4+)
+        self.last_drain_time = 0
+        self.drain_interval = 1000  # milliseconds (drain every 1 second)
+
+    def _check_events(self):
+        """Respond to keypresses and mouse events."""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                sys.exit()
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RIGHT:
+                    self.ship.moving_right = True
+                elif event.key == pygame.K_LEFT:
+                    self.ship.moving_left = True
+                elif event.key == pygame.K_UP:
+                    self.ship.moving_up = True
+                elif event.key == pygame.K_DOWN:
+                    self.ship.moving_down = True
+                elif event.key == pygame.K_SPACE:
+                    # Fire on space press (not continuous hold)
+                    if not self.space_pressed:
+                        self.space_pressed = True
+                        self._fire_bullet()
+            elif event.type == pygame.KEYUP:
+                if event.key == pygame.K_RIGHT:
+                    self.ship.moving_right = False
+                elif event.key == pygame.K_LEFT:
+                    self.ship.moving_left = False
+                elif event.key == pygame.K_UP:
+                    self.ship.moving_up = False
+                elif event.key == pygame.K_DOWN:
+                    self.ship.moving_down = False
+                elif event.key == pygame.K_SPACE:
+                    # Mark space as released to allow next tap
+                    self.space_pressed = False
+
+    def _create_fleet(self):
+        """Create multiple columns of aliens at different positions around the screen."""
+        alien = Alien(self)
+        alien_width = alien.rect.width
+        alien_height = alien.rect.height
+        
+        # Calculate spacing
+        available_height = self.settings.screen_height - 2 * alien_height
+        aliens_per_column = available_height // (2 * alien_height)
+        
+        # Create multiple columns of aliens at different x positions
+        x_positions = [
+            alien_width + 10,                          # Far left
+            self.settings.screen_width // 4,           # Left-quarter
+            self.settings.screen_width // 2,           # Center
+            3 * self.settings.screen_width // 4,       # Right-quarter
+            self.settings.screen_width - alien_width - 50,  # Far right
+        ]
+        
+        # Create columns at each x position
+        for x_pos in x_positions:
+            for alien_number in range(aliens_per_column):
+                new_alien = Alien(self)
+                new_alien.rect.x = x_pos
+                new_alien.rect.y = alien_height + alien_number * (2 * alien_height)
+                # Sync the floating-point position with rect position
+                new_alien.x = float(new_alien.rect.x)
+                new_alien.y = float(new_alien.rect.y)
+                self.aliens.add(new_alien)
+        
+        print(f"Created {len(self.aliens)} aliens")
+
+    def _check_fleet_edges(self):
+        """Respond appropriately if any aliens have reached an edge."""
+        screen_rect = self.screen.get_rect()
+        for alien in self.aliens.sprites():
+            if alien.rect.right >= screen_rect.right or alien.rect.left <= 0:
+                return True
+        return False
+
+    def _change_fleet_direction(self):
+        """Drop the entire fleet and change the fleet's direction."""
+        for alien in self.aliens.sprites():
+            alien.y += self.settings.fleet_drop_speed
+            alien.rect.y = int(alien.y)
+        # Reverse direction
+        self.settings.fleet_direction *= -1
+
+    def _fire_bullet(self):
+        """Fire a bullet with burst/cooldown control."""
+        now = pygame.time.get_ticks()
+        if self.in_burst_cooldown:
+            # Check if cooldown expired
+            if now - self.burst_cooldown_start >= self.burst_cooldown:
+                self.in_burst_cooldown = False
+                self.bullets_in_burst = 0
+            else:
+                return
+
+        if self.bullets_in_burst < self.burst_limit:
+            new_bullet = Bullet(self)
+            self.bullets.add(new_bullet)
+            self.bullets_in_burst += 1
+            if self.bullets_in_burst >= self.burst_limit:
+                self.in_burst_cooldown = True
+                self.burst_cooldown_start = now
+
+    def _update_aliens(self):
+        """Update positions of all aliens and check for collisions with ship."""
+        # If any alien is at an edge, drop the fleet and reverse direction
+        if self._check_fleet_edges():
+            self._change_fleet_direction()
+
+        # Update alien positions
+        self.aliens.update()
+        collisions = pygame.sprite.spritecollide(self.ship, self.aliens, False)
+        if collisions:
+            # Damage scales with round: round1=2.0, round2=2.5, round3=3.0, ...
+            damage_per_hit = 2.0 + 0.5 * (self.round - 1)
+            hits = len(collisions)
+            self.healthbar.update(self.healthbar.current - damage_per_hit * hits)
+            # If health dropped to zero or below, handle game over
+            if self.healthbar.current <= 0:
+                self._handle_game_over()
+                return
+
+                # Passive health drain: decrease health by 2 every 1 second
+                now = pygame.time.get_ticks()
+                if now - self.last_drain_time >= self.drain_interval:
+                    self.healthbar.update(self.healthbar.current - 2)
+                    self.last_drain_time = now
+                    # Check if drained to zero
+                    if self.healthbar.current <= 0:
+                        self._handle_game_over()
+                        return
+
+        # Check for bullet-alien collisions
+        # Remove both bullet and alien on collision; add to score
+        collisions = pygame.sprite.groupcollide(self.bullets, self.aliens, True, True)
+        if collisions:
+            # collisions maps bullets -> list of aliens hit
+            hits = sum(len(v) for v in collisions.values())
+            self.score += hits * 10
+
+        # If all aliens are gone, advance the round, respawn, reset health, and show message
+        if not self.aliens:
+            # Clear remaining bullets so they don't immediately hit new aliens
+            self.bullets.empty()
+            # Advance round
+            self.round += 1
+            # Increase alien speed based on round (small increment per round)
+            self.settings.alien_speed = self.base_alien_speed + 0.5 * (self.round - 1)
+            # Reset ship health to max
+            self.healthbar.update(self.healthbar.max_health)
+            # Track high score
+            if self.score > self.high_score:
+                self.high_score = self.score
+            # Create new fleet
+            self._create_fleet()
+            # Start round message timer
+            self.round_start_time = pygame.time.get_ticks()
+            self.show_round_message = True
+            # Reset drain timer for new round
+            self.last_drain_time = pygame.time.get_ticks()
+
+    def reset_game(self):
+        """Reset game state for a fresh run (keeps high score)."""
+        # Clear aliens and bullets
+        self.aliens.empty()
+        self.bullets.empty()
+        # Reset score and round
+        self.score = 0
+        self.round = 1
+        # Reset alien speed
+        self.settings.alien_speed = self.base_alien_speed
+        # Reset health
+        self.healthbar.update(self.healthbar.max_health)
+        # Reset burst state
+        self.bullets_in_burst = 0
+        self.in_burst_cooldown = False
+        # Create new fleet
+        self._create_fleet()
+        self.show_round_message = False
+
+    def show_start_screen(self):
+        """Display a start screen and wait for the player to begin."""
+        screen = self.screen
+        font = pygame.font.SysFont(None, 48)
+        small = pygame.font.SysFont(None, 24)
+        button_text = "Start"
+        title_surf = font.render("Alien Infection", True, (255, 255, 255))
+        button_surf = font.render(button_text, True, (0, 0, 0))
+        button_rect = button_surf.get_rect()
+        button_rect.center = screen.get_rect().center
+        box = button_rect.inflate(40, 24)
+
+        waiting = True
+        while waiting:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if box.collidepoint(event.pos):
+                        waiting = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        waiting = False
+
+            screen.fill(self.settings.bg_color)
+            title_rect = title_surf.get_rect(center=(screen.get_rect().centerx, screen.get_rect().centery - 80))
+            screen.blit(title_surf, title_rect)
+            pygame.draw.rect(screen, (255, 255, 255), box)
+            screen.blit(button_surf, button_rect)
+            hint = small.render("Click Start or press Enter/Space", True, (200, 200, 200))
+            hint_rect = hint.get_rect(center=(screen.get_rect().centerx, screen.get_rect().centery + 80))
+            screen.blit(hint, hint_rect)
+            pygame.display.flip()
+
+    def _handle_game_over(self):
+        """Show a Game Over screen and return to the start screen when player acknowledges."""
+        screen = self.screen
+        font = pygame.font.SysFont(None, 64)
+        small = pygame.font.SysFont(None, 24)
+        msg_surf = font.render("Game Over", True, (255, 0, 0))
+        hint = small.render("Click to return to menu", True, (200, 200, 200))
+        msg_rect = msg_surf.get_rect(center=screen.get_rect().center)
+        hint_rect = hint.get_rect(center=(screen.get_rect().centerx, screen.get_rect().centery + 60))
+
+        waiting = True
+        while waiting:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                elif event.type == pygame.MOUSEBUTTONDOWN or (event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_SPACE)):
+                    waiting = False
+
+            # Draw overlay
+            overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 180))
+            screen.blit(overlay, (0, 0))
+            screen.blit(msg_surf, msg_rect)
+            screen.blit(hint, hint_rect)
+            pygame.display.flip()
+
+        # After acknowledging, reset game and go to start screen
+        self.reset_game()
+        self.show_start_screen()
+
+    def run_game(self):
+        """Start the main loop for the game."""
+        while True:
+            # Process events
+            self._check_events()
+
+            # Update game objects
+            self.ship.update()
+            self._update_aliens()
+            # Update bullets
+            self.bullets.update()
+            # Remove bullets that have left the screen
+            for bullet in self.bullets.copy():
+                if bullet.rect.bottom <= 0:
+                    self.bullets.remove(bullet)
+
+            # Redraw the screen during each pass through the loop
+            self.screen.fill(self.settings.bg_color)
+            self.ship.blitme()
+            self.aliens.draw(self.screen)
+            # Draw bullets
+            for bullet in self.bullets.sprites():
+                bullet.draw_bullet()
+            # Draw score (top-left)
+            score_surf = self.font.render(f"Score: {self.score}", True, (255, 255, 255))
+            self.screen.blit(score_surf, (10, 10))
+            # Draw high score to the right of score
+            hs_surf = self.font.render(f"High: {self.high_score}", True, (255, 255, 255))
+            self.screen.blit(hs_surf, (120, 10))
+            # Draw health bar
+            self.healthbar.blitme()
+
+            # Make the most recently drawn screen visible.
+            # Show round message if active
+            if self.show_round_message:
+                elapsed = pygame.time.get_ticks() - self.round_start_time
+                if elapsed <= self.round_message_time:
+                    msg = f"Round {self.round}"
+                    msg_surf = self.font.render(msg, True, (255, 255, 0))
+                    msg_rect = msg_surf.get_rect(center=self.screen.get_rect().center)
+                    # draw background box for readability
+                    box = msg_rect.inflate(20, 12)
+                    pygame.draw.rect(self.screen, (0, 0, 0), box)
+                    self.screen.blit(msg_surf, msg_rect)
+                else:
+                    self.show_round_message = False
+
+            pygame.display.flip()
+
+            # Cap the frame rate
+            self.clock.tick(60)
+
+
+if __name__ == '__main__':
+    # Make a game instance, and run the game.
+    ai = AlienInvasion()
+    # Show the class start screen and begin
+    ai.show_start_screen()
+    ai.run_game()
+
+
+
